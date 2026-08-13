@@ -1,0 +1,11 @@
+{
+  "expo": {
+    "name": "Shinzi Music",
+    "slug": "shinzi-music-app",
+    "version": "1.0.0",
+    "android": {
+      "package": "com.redking.shinzimusic"
+    }
+  }
+}
+
