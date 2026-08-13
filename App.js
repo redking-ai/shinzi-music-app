@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, ScrollView, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-// 1. FIREBASE IMPORTS (Expo Snack will auto-install this)
+// 1. FIREBASE IMPORTS
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { initializeAuth, getReactNativePersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // 2. YOUR STEALTH KEYS
 const firebaseConfig = {
@@ -13,7 +14,11 @@ const firebaseConfig = {
   projectId: "shinzi-music",
 };
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+
+// THE FIX: Tell Firebase this is a native phone app, not a website!
+const auth = initializeAuth(app, {
+  persistence: getReactNativePersistence(AsyncStorage)
+});
 
 export default function App() {
   // ROUTER STATE: 'Continue', 'Login', 'Signup', 'MainApp'
@@ -179,4 +184,3 @@ const styles = StyleSheet.create({
   navText: { color: '#a7a7a7', fontSize: 11, marginTop: 4 },
   navTextActive: { color: '#ffffff', fontWeight: '700' },
 });
-
