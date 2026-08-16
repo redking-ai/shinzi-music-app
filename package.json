@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "expo": "~54.0.19",
-    "expo-status-bar": "~2.1.1",
+    "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "firebase": "^10.8.1",
