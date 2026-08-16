@@ -7,17 +7,8 @@ import { initializeApp } from 'firebase/app';
 import { initializeAuth, getReactNativePersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// 2. AUDIO ENGINE (TRACK PLAYER)
-import TrackPlayer, { Capability, State } from 'react-native-track-player';
-
-// SAFELY REGISTER BACKGROUND AUDIO SERVICE
-try {
-  TrackPlayer.registerPlaybackService(() => async function() {
-      TrackPlayer.addEventListener('remote-play', () => TrackPlayer.play());
-      TrackPlayer.addEventListener('remote-pause', () => TrackPlayer.pause());
-      TrackPlayer.addEventListener('remote-stop', () => TrackPlayer.destroy());
-  });
-} catch (error) {}
+// 2. OFFICIAL EXPO AUDIO ENGINE
+import { Audio } from 'expo-av';
 
 // 3. YOUR STEALTH KEYS
 const firebaseConfig = {
@@ -47,22 +38,12 @@ export default function App() {
   const [currentTrack, setCurrentTrack] = useState(null);
   const [isPlayerOpen, setIsPlayerOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [sound, setSound] = useState(null);
 
-  // --- INITIALIZE AUDIO ENGINE ON BOOT ---
+  // CLEANUP AUDIO MEMORY WHEN APP CLOSES
   useEffect(() => {
-    const setupPlayer = async () => {
-      try {
-        await TrackPlayer.setupPlayer();
-        await TrackPlayer.updateOptions({
-          capabilities: [Capability.Play, Capability.Pause, Capability.Stop],
-          compactCapabilities: [Capability.Play, Capability.Pause],
-        });
-      } catch (e) {
-        console.log("Audio Engine Ready");
-      }
-    };
-    setupPlayer();
-  }, []);
+    return sound ? () => { sound.unloadAsync(); } : undefined;
+  }, [sound]);
 
   // --- AUTH LOGIC ---
   const handleLogin = async () => {
@@ -86,15 +67,22 @@ export default function App() {
       await signOut(auth);
       setCurrentScreen('Continue');
       setEmail(''); setPassword(''); setActiveTab('Home');
+      
+      if (sound) { await sound.unloadAsync(); }
+      setSound(null);
+      setCurrentTrack(null);
+      setIsPlaying(false);
     } catch (error) { console.error("Logout failed", error); }
   };
 
   // --- MUSIC ENGINE API CALLS ---
-  const handleSearch = async () => {
-    if (!searchQuery) return;
+  // GPT FIX: Now accepts a query parameter so it doesn't use old React state!
+  const handleSearch = async (query = searchQuery) => {
+    if (!query || !query.trim()) return;
+    
     setSearchLoading(true);
     try {
-      const response = await fetch(`${RENDER_BACKEND_URL}/search?q=${encodeURIComponent(searchQuery)}`);
+      const response = await fetch(`${RENDER_BACKEND_URL}/search?q=${encodeURIComponent(query)}`);
       const data = await response.json();
       setSearchResults(data.results || []);
     } catch (error) {
@@ -108,34 +96,42 @@ export default function App() {
     try {
       setCurrentTrack(track);
       setIsPlayerOpen(true);
-      setIsPlaying(true);
 
-      // Ask Render for the secret audio stream
       const response = await fetch(`${RENDER_BACKEND_URL}/stream/${track.id}`);
       const data = await response.json();
 
       if (data.streamUrl) {
-        await TrackPlayer.reset();
-        await TrackPlayer.add({
-          id: track.id,
-          url: data.streamUrl,
-          title: track.title,
-          artist: track.artist,
-          artwork: track.thumbnail,
+        if (sound) {
+          await sound.unloadAsync();
+        }
+
+        await Audio.setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: true,
+          shouldDuckAndroid: true,
         });
-        await TrackPlayer.play();
+
+        const { sound: newSound } = await Audio.Sound.createAsync(
+          { uri: data.streamUrl },
+          { shouldPlay: true }
+        );
+        
+        setSound(newSound);
+        setIsPlaying(true); 
       }
     } catch (error) {
       console.log("Stream error", error);
+      setIsPlaying(false);
     }
   };
 
   const togglePlayback = async () => {
+    if (!sound) return;
     if (isPlaying) {
-      await TrackPlayer.pause();
+      await sound.pauseAsync();
       setIsPlaying(false);
     } else {
-      await TrackPlayer.play();
+      await sound.playAsync();
       setIsPlaying(true);
     }
   };
@@ -202,11 +198,11 @@ export default function App() {
             </View>
 
             <View style={styles.quickGrid}>
-              <TouchableOpacity style={styles.quickCard} onPress={() => { setSearchQuery('Phonk'); setActiveTab('Search'); handleSearch(); }}>
+              <TouchableOpacity style={styles.quickCard} onPress={() => { setSearchQuery('Phonk'); setActiveTab('Search'); handleSearch('Phonk'); }}>
                 <View style={styles.quickCardImg}><Ionicons name="flame" size={24} color="#fff" /></View>
                 <Text style={styles.quickCardText}>Phonk Vibes</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.quickCard} onPress={() => { setSearchQuery('Lofi coding'); setActiveTab('Search'); handleSearch(); }}>
+              <TouchableOpacity style={styles.quickCard} onPress={() => { setSearchQuery('Lofi coding'); setActiveTab('Search'); handleSearch('Lofi coding'); }}>
                 <View style={styles.quickCardImg}><Ionicons name="headset" size={24} color="#fff" /></View>
                 <Text style={styles.quickCardText}>Lofi Coding</Text>
               </TouchableOpacity>
@@ -230,7 +226,7 @@ export default function App() {
                 placeholderTextColor="#a7a7a7" 
                 value={searchQuery} 
                 onChangeText={setSearchQuery} 
-                onSubmitEditing={handleSearch}
+                onSubmitEditing={() => handleSearch(searchQuery)}
                 returnKeyType="search"
               />
               {searchQuery.length > 0 && (
@@ -276,7 +272,7 @@ export default function App() {
         )}
       </View>
 
-      {/* --- MINI PLAYER (Only shows if a track is selected) --- */}
+      {/* --- MINI PLAYER --- */}
       {currentTrack && (
         <TouchableOpacity style={styles.miniPlayer} onPress={() => setIsPlayerOpen(true)}>
           <View style={styles.miniPlayerLeft}>
@@ -301,9 +297,7 @@ export default function App() {
         </View>
       </View>
 
-      {/* ========================================== */}
-      {/* --- FULLSCREEN PLAYER (Jujutsu Vibe) --- */}
-      {/* ========================================== */}
+      {/* --- FULLSCREEN PLAYER --- */}
       <Modal animationType="slide" transparent={false} visible={isPlayerOpen} onRequestClose={() => setIsPlayerOpen(false)}>
         <SafeAreaView style={styles.innerPlayerContainer}>
           <StatusBar barStyle="light-content" backgroundColor="#121212" />
@@ -351,7 +345,6 @@ export default function App() {
           </View>
         </SafeAreaView>
       </Modal>
-
     </SafeAreaView>
   );
 }
@@ -395,7 +388,6 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, color: '#fff', fontSize: 15, height: '100%' },
   clearBtn: { padding: 4 },
 
-  /* --- SEARCH RESULTS UI --- */
   searchResultItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, backgroundColor: '#121212', padding: 8, borderRadius: 8 },
   searchThumb: { width: 56, height: 56, borderRadius: 6, marginRight: 12 },
   searchInfo: { flex: 1, marginRight: 12 },
@@ -411,14 +403,12 @@ const styles = StyleSheet.create({
   navText: { color: '#a7a7a7', fontSize: 11, marginTop: 4, fontWeight: '600' },
   navTextActive: { color: '#1db954', fontWeight: '800' },
 
-  /* --- MINI PLAYER CSS --- */
   miniPlayer: { position: 'absolute', bottom: Platform.OS === 'android' ? 100 : 110, left: 24, right: 24, backgroundColor: '#1e1e1e', borderRadius: 8, padding: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 10, elevation: 10 },
   miniPlayerLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   miniPlayerArt: { width: 44, height: 44, borderRadius: 4, marginRight: 12, backgroundColor: '#282828' },
   miniPlayerTitle: { color: '#fff', fontSize: 14, fontWeight: '700' },
   miniPlayerArtist: { color: '#a7a7a7', fontSize: 12 },
 
-  /* --- INNER SCREEN (FULLSCREEN) CSS --- */
   innerPlayerContainer: { flex: 1, backgroundColor: '#121212', padding: 24 },
   innerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
   innerHeaderText: { color: '#fff', fontSize: 12, fontWeight: '700', letterSpacing: 1 },
