@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, ScrollView, TextInput, KeyboardAvoidingView, Platform, Modal, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -7,7 +7,19 @@ import { initializeApp } from 'firebase/app';
 import { initializeAuth, getReactNativePersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// 2. YOUR STEALTH KEYS
+// 2. AUDIO ENGINE (TRACK PLAYER)
+import TrackPlayer, { Capability, State } from 'react-native-track-player';
+
+// SAFELY REGISTER BACKGROUND AUDIO SERVICE
+try {
+  TrackPlayer.registerPlaybackService(() => async function() {
+      TrackPlayer.addEventListener('remote-play', () => TrackPlayer.play());
+      TrackPlayer.addEventListener('remote-pause', () => TrackPlayer.pause());
+      TrackPlayer.addEventListener('remote-stop', () => TrackPlayer.destroy());
+  });
+} catch (error) {}
+
+// 3. YOUR STEALTH KEYS
 const firebaseConfig = {
   apiKey: ['AIzaSyA9', '-BquJOixe2dku', 'MA4OR_LH_', '-4kqcFrRE'].join(''),
   authDomain: "shinzi-music.firebaseapp.com",
@@ -15,6 +27,9 @@ const firebaseConfig = {
 };
 const app = initializeApp(firebaseConfig);
 const auth = initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
+
+// 4. YOUR LIVE RENDER BACKEND
+const RENDER_BACKEND_URL = "https://shinzi-music-backend-mqry.onrender.com";
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('Continue');
@@ -25,10 +40,29 @@ export default function App() {
   // NAVIGATION & SEARCH
   const [activeTab, setActiveTab] = useState('Home'); 
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
 
   // PLAYER STATE
+  const [currentTrack, setCurrentTrack] = useState(null);
   const [isPlayerOpen, setIsPlayerOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // --- INITIALIZE AUDIO ENGINE ON BOOT ---
+  useEffect(() => {
+    const setupPlayer = async () => {
+      try {
+        await TrackPlayer.setupPlayer();
+        await TrackPlayer.updateOptions({
+          capabilities: [Capability.Play, Capability.Pause, Capability.Stop],
+          compactCapabilities: [Capability.Play, Capability.Pause],
+        });
+      } catch (e) {
+        console.log("Audio Engine Ready");
+      }
+    };
+    setupPlayer();
+  }, []);
 
   // --- AUTH LOGIC ---
   const handleLogin = async () => {
@@ -53,6 +87,57 @@ export default function App() {
       setCurrentScreen('Continue');
       setEmail(''); setPassword(''); setActiveTab('Home');
     } catch (error) { console.error("Logout failed", error); }
+  };
+
+  // --- MUSIC ENGINE API CALLS ---
+  const handleSearch = async () => {
+    if (!searchQuery) return;
+    setSearchLoading(true);
+    try {
+      const response = await fetch(`${RENDER_BACKEND_URL}/search?q=${encodeURIComponent(searchQuery)}`);
+      const data = await response.json();
+      setSearchResults(data.results || []);
+    } catch (error) {
+      console.log("Search error", error);
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  const playSong = async (track) => {
+    try {
+      setCurrentTrack(track);
+      setIsPlayerOpen(true);
+      setIsPlaying(true);
+
+      // Ask Render for the secret audio stream
+      const response = await fetch(`${RENDER_BACKEND_URL}/stream/${track.id}`);
+      const data = await response.json();
+
+      if (data.streamUrl) {
+        await TrackPlayer.reset();
+        await TrackPlayer.add({
+          id: track.id,
+          url: data.streamUrl,
+          title: track.title,
+          artist: track.artist,
+          artwork: track.thumbnail,
+        });
+        await TrackPlayer.play();
+      }
+    } catch (error) {
+      console.log("Stream error", error);
+    }
+  };
+
+  const togglePlayback = async () => {
+    if (isPlaying) {
+      await TrackPlayer.pause();
+      setIsPlaying(false);
+    } else {
+      await TrackPlayer.play();
+      setIsPlaying(true);
+    }
   };
 
   // --- SCREEN 1: CONTINUE SCREEN ---
@@ -102,6 +187,7 @@ export default function App() {
       <StatusBar barStyle="light-content" backgroundColor="#000" />
       
       <View style={styles.contentArea}>
+        
         {/* === HOME TAB === */}
         {activeTab === 'Home' && (
           <ScrollView contentContainerStyle={styles.scrollContainer}>
@@ -116,40 +202,72 @@ export default function App() {
             </View>
 
             <View style={styles.quickGrid}>
-              <View style={styles.quickCard}>
+              <TouchableOpacity style={styles.quickCard} onPress={() => { setSearchQuery('Phonk'); setActiveTab('Search'); handleSearch(); }}>
                 <View style={styles.quickCardImg}><Ionicons name="flame" size={24} color="#fff" /></View>
                 <Text style={styles.quickCardText}>Phonk Vibes</Text>
-              </View>
-              <View style={styles.quickCard}>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.quickCard} onPress={() => { setSearchQuery('Lofi coding'); setActiveTab('Search'); handleSearch(); }}>
                 <View style={styles.quickCardImg}><Ionicons name="headset" size={24} color="#fff" /></View>
                 <Text style={styles.quickCardText}>Lofi Coding</Text>
-              </View>
+              </TouchableOpacity>
             </View>
 
             <Text style={styles.sectionTitle}>Trending Now</Text>
-            <View style={styles.placeholderShelf}><Text style={styles.placeholderText}>Render API Hook Pending...</Text></View>
+            <View style={styles.placeholderShelf}><Text style={styles.placeholderText}>Render Proxy Active - Searching available</Text></View>
           </ScrollView>
         )}
 
         {/* === SEARCH TAB === */}
         {activeTab === 'Search' && (
-          <View style={styles.scrollContainer}>
+          <View style={[styles.scrollContainer, {flex: 1}]}>
             <Text style={styles.headerText}>Search</Text>
+            
             <View style={styles.searchBoxContainer}>
               <Ionicons name="search" size={20} color="#a7a7a7" style={styles.searchIcon} />
-              <TextInput style={styles.searchInput} placeholder="What do you want to listen to?" placeholderTextColor="#a7a7a7" value={searchQuery} onChangeText={setSearchQuery} />
+              <TextInput 
+                style={styles.searchInput} 
+                placeholder="What do you want to listen to?" 
+                placeholderTextColor="#a7a7a7" 
+                value={searchQuery} 
+                onChangeText={setSearchQuery} 
+                onSubmitEditing={handleSearch}
+                returnKeyType="search"
+              />
               {searchQuery.length > 0 && (
-                <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}><Ionicons name="close" size={20} color="#a7a7a7" /></TouchableOpacity>
+                <TouchableOpacity onPress={() => { setSearchQuery(''); setSearchResults([]); }} style={styles.clearBtn}>
+                  <Ionicons name="close" size={20} color="#a7a7a7" />
+                </TouchableOpacity>
               )}
             </View>
-            <View style={styles.placeholderResults}>
-                <Ionicons name="search-outline" size={48} color="#282828" />
-                <Text style={styles.placeholderText}>Search proxy will connect here</Text>
-            </View>
+
+            {/* SEARCH RESULTS AREA */}
+            {searchLoading ? (
+               <View style={styles.placeholderResults}>
+                 <Text style={styles.placeholderText}>Scraping Audio Data...</Text>
+               </View>
+            ) : searchResults.length > 0 ? (
+               <ScrollView style={{ marginTop: 20 }}>
+                 {searchResults.map((track, index) => (
+                   <TouchableOpacity key={index} style={styles.searchResultItem} onPress={() => playSong(track)}>
+                     <Image source={{ uri: track.thumbnail }} style={styles.searchThumb} />
+                     <View style={styles.searchInfo}>
+                       <Text style={styles.searchTitle} numberOfLines={1}>{track.title}</Text>
+                       <Text style={styles.searchArtist} numberOfLines={1}>{track.artist} • {track.duration}</Text>
+                     </View>
+                     <Ionicons name="ellipsis-vertical" size={20} color="#a7a7a7" />
+                   </TouchableOpacity>
+                 ))}
+               </ScrollView>
+            ) : (
+              <View style={styles.placeholderResults}>
+                  <Ionicons name="search-outline" size={48} color="#282828" />
+                  <Text style={styles.placeholderText}>Search for songs, artists, or anime ops</Text>
+              </View>
+            )}
           </View>
         )}
 
-        {/* === SETTINGS TAB === (Truncated for space, identical to last time) */}
+        {/* === SETTINGS TAB === */}
         {activeTab === 'Settings' && (
           <ScrollView contentContainerStyle={styles.scrollContainer}>
             <Text style={styles.headerText}>Settings</Text>
@@ -158,21 +276,21 @@ export default function App() {
         )}
       </View>
 
-      {/* --- MINI PLAYER (Sits above Bottom Nav) --- */}
-      <TouchableOpacity style={styles.miniPlayer} onPress={() => setIsPlayerOpen(true)}>
-        <View style={styles.miniPlayerLeft}>
-          <View style={styles.miniPlayerArt}>
-            <Ionicons name="musical-note" size={20} color="#a7a7a7" />
+      {/* --- MINI PLAYER (Only shows if a track is selected) --- */}
+      {currentTrack && (
+        <TouchableOpacity style={styles.miniPlayer} onPress={() => setIsPlayerOpen(true)}>
+          <View style={styles.miniPlayerLeft}>
+            <Image source={{ uri: currentTrack.thumbnail }} style={styles.miniPlayerArt} />
+            <View style={{ flex: 1, paddingRight: 10 }}>
+              <Text style={styles.miniPlayerTitle} numberOfLines={1}>{currentTrack.title}</Text>
+              <Text style={styles.miniPlayerArtist} numberOfLines={1}>{currentTrack.artist}</Text>
+            </View>
           </View>
-          <View>
-            <Text style={styles.miniPlayerTitle}>Not Playing</Text>
-            <Text style={styles.miniPlayerArtist}>Select a song</Text>
-          </View>
-        </View>
-        <TouchableOpacity onPress={() => setIsPlaying(!isPlaying)}>
-          <Ionicons name={isPlaying ? "pause" : "play"} size={28} color="#fff" />
+          <TouchableOpacity onPress={togglePlayback}>
+            <Ionicons name={isPlaying ? "pause" : "play"} size={28} color="#fff" />
+          </TouchableOpacity>
         </TouchableOpacity>
-      </TouchableOpacity>
+      )}
 
       {/* --- BOTTOM NAV --- */}
       <View style={styles.floatingNavContainer}>
@@ -184,60 +302,53 @@ export default function App() {
       </View>
 
       {/* ========================================== */}
-      {/* --- INNER SCREEN (FULLSCREEN PLAYER) --- */}
+      {/* --- FULLSCREEN PLAYER (Jujutsu Vibe) --- */}
       {/* ========================================== */}
       <Modal animationType="slide" transparent={false} visible={isPlayerOpen} onRequestClose={() => setIsPlayerOpen(false)}>
         <SafeAreaView style={styles.innerPlayerContainer}>
           <StatusBar barStyle="light-content" backgroundColor="#121212" />
           
-          {/* Header */}
           <View style={styles.innerHeader}>
             <TouchableOpacity onPress={() => setIsPlayerOpen(false)}>
               <Ionicons name="chevron-down" size={32} color="#fff" />
             </TouchableOpacity>
             <Text style={styles.innerHeaderText}>NOW PLAYING</Text>
-            <View style={{ width: 32 }} /> {/* Spacer */}
+            <View style={{ width: 32 }} />
           </View>
 
-          {/* Artwork */}
           <View style={styles.innerArtContainer}>
-             {/* Placeholder for Jujutsu Kaisen Image */}
-             <View style={styles.innerArtPlaceholder}>
-               <Ionicons name="musical-notes" size={80} color="#282828" />
-             </View>
+             {currentTrack ? (
+               <Image source={{ uri: currentTrack.thumbnail }} style={styles.innerArtImage} />
+             ) : (
+               <View style={styles.innerArtPlaceholder}><Ionicons name="musical-notes" size={80} color="#282828" /></View>
+             )}
           </View>
 
-          {/* Title & Heart */}
           <View style={styles.innerTrackInfo}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.innerTitle} numberOfLines={1}>Jujutsu Kaisen Season 3...</Text>
-              <Text style={styles.innerArtist}>Jamong</Text>
+            <View style={{ flex: 1, paddingRight: 16 }}>
+              <Text style={styles.innerTitle} numberOfLines={1}>{currentTrack?.title || "Not Playing"}</Text>
+              <Text style={styles.innerArtist} numberOfLines={1}>{currentTrack?.artist || "Select a song"}</Text>
             </View>
             <TouchableOpacity><Ionicons name="heart" size={28} color="#1db954" /></TouchableOpacity>
           </View>
 
-          {/* Timeline */}
           <View style={styles.innerTimeline}>
             <View style={styles.progressBar}><View style={styles.progressFill} /></View>
             <View style={styles.timeLabels}>
-              <Text style={styles.timeText}>0:00</Text>
-              <Text style={styles.timeText}>3:45</Text>
+              <Text style={styles.timeText}>Live Stream</Text>
+              <Text style={styles.timeText}>{currentTrack?.duration || "0:00"}</Text>
             </View>
           </View>
 
-          {/* Controls */}
           <View style={styles.innerControls}>
             <TouchableOpacity><Ionicons name="shuffle" size={28} color="#a7a7a7" /></TouchableOpacity>
             <TouchableOpacity><Ionicons name="play-skip-back" size={36} color="#fff" /></TouchableOpacity>
-            
-            <TouchableOpacity style={styles.playPauseBtn} onPress={() => setIsPlaying(!isPlaying)}>
+            <TouchableOpacity style={styles.playPauseBtn} onPress={togglePlayback}>
               <Ionicons name={isPlaying ? "pause" : "play"} size={40} color="#000" style={{ marginLeft: isPlaying ? 0 : 4 }} />
             </TouchableOpacity>
-            
             <TouchableOpacity><Ionicons name="play-skip-forward" size={36} color="#fff" /></TouchableOpacity>
             <TouchableOpacity><Ionicons name="repeat" size={28} color="#a7a7a7" /></TouchableOpacity>
           </View>
-
         </SafeAreaView>
       </Modal>
 
@@ -262,7 +373,7 @@ const styles = StyleSheet.create({
   errorText: { color: '#ff4444', fontSize: 13, marginTop: -8, marginBottom: 8, textAlign: 'center' },
   
   contentArea: { flex: 1 },
-  scrollContainer: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 180 }, // Extra padding for Mini Player
+  scrollContainer: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 180 }, 
   
   topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 20 },
   subGreeting: { color: '#1db954', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginBottom: 2 },
@@ -278,10 +389,19 @@ const styles = StyleSheet.create({
   placeholderText: { color: '#a7a7a7', fontSize: 13, marginTop: 8 },
   placeholderResults: { flex: 1, justifyContent: 'center', alignItems: 'center', marginTop: 100 },
   headerText: { fontSize: 32, fontWeight: '800', color: '#fff', marginVertical: 24, letterSpacing: -1 },
+  
   searchBoxContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#242424', borderRadius: 50, paddingHorizontal: 16, height: 50 },
   searchIcon: { marginRight: 10 },
   searchInput: { flex: 1, color: '#fff', fontSize: 15, height: '100%' },
   clearBtn: { padding: 4 },
+
+  /* --- SEARCH RESULTS UI --- */
+  searchResultItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, backgroundColor: '#121212', padding: 8, borderRadius: 8 },
+  searchThumb: { width: 56, height: 56, borderRadius: 6, marginRight: 12 },
+  searchInfo: { flex: 1, marginRight: 12 },
+  searchTitle: { color: '#fff', fontSize: 15, fontWeight: '700', marginBottom: 4 },
+  searchArtist: { color: '#a7a7a7', fontSize: 13 },
+
   logoutBtn: { backgroundColor: '#2a0e0e', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
   logoutBtnText: { color: '#ff4444', fontSize: 16, fontWeight: '700' },
 
@@ -293,8 +413,8 @@ const styles = StyleSheet.create({
 
   /* --- MINI PLAYER CSS --- */
   miniPlayer: { position: 'absolute', bottom: Platform.OS === 'android' ? 100 : 110, left: 24, right: 24, backgroundColor: '#1e1e1e', borderRadius: 8, padding: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 10, elevation: 10 },
-  miniPlayerLeft: { flexDirection: 'row', alignItems: 'center' },
-  miniPlayerArt: { width: 40, height: 40, backgroundColor: '#282828', borderRadius: 4, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  miniPlayerLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  miniPlayerArt: { width: 44, height: 44, borderRadius: 4, marginRight: 12, backgroundColor: '#282828' },
   miniPlayerTitle: { color: '#fff', fontSize: 14, fontWeight: '700' },
   miniPlayerArtist: { color: '#a7a7a7', fontSize: 12 },
 
@@ -302,8 +422,9 @@ const styles = StyleSheet.create({
   innerPlayerContainer: { flex: 1, backgroundColor: '#121212', padding: 24 },
   innerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
   innerHeaderText: { color: '#fff', fontSize: 12, fontWeight: '700', letterSpacing: 1 },
-  innerArtContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', marginVertical: 20 },
-  innerArtPlaceholder: { width: '100%', aspectRatio: 1, backgroundColor: '#1e1e1e', borderRadius: 8, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.5, shadowRadius: 20, elevation: 20 },
+  innerArtContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', marginVertical: 20, width: '100%' },
+  innerArtImage: { width: '100%', aspectRatio: 1, borderRadius: 12 },
+  innerArtPlaceholder: { width: '100%', aspectRatio: 1, backgroundColor: '#1e1e1e', borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   innerTrackInfo: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 30 },
   innerTitle: { color: '#fff', fontSize: 24, fontWeight: '800', marginBottom: 4 },
   innerArtist: { color: '#a7a7a7', fontSize: 16 },
