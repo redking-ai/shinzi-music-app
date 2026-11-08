@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, ScrollView, TextInput, KeyboardAvoidingView, Platform, Image, ActivityIndicator, BackHandler } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Font from 'expo-font';
 import YoutubeIframe from 'react-native-youtube-iframe';
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
@@ -16,12 +17,27 @@ const firebaseConfig = {
   projectId: 'shinzi-music'
 };
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-let auth;
-try {
-  auth = initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
-} catch {
-  auth = getAuth(app);
+let appInstance = null;
+let authInstance = null;
+
+function getAuthSafe() {
+  if (!authInstance) {
+    try {
+      if (!appInstance) {
+        appInstance = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+      }
+      authInstance = initializeAuth(appInstance, {
+        persistence: getReactNativePersistence(AsyncStorage),
+      });
+    } catch {
+      try {
+        authInstance = getAuth(appInstance || initializeApp(firebaseConfig));
+      } catch (err) {
+        console.warn('Auth fallback error:', err);
+      }
+    }
+  }
+  return authInstance;
 }
 
 // ======================================================
@@ -29,7 +45,8 @@ try {
 // ======================================================
 const RENDER_BACKEND_URL = 'https://shinzi-music-backend-mqry.onrender.com';
 
-export default function App() {
+function App() {
+  const [fontsLoaded, fontError] = Font.useFonts(Ionicons.font);
   const [currentScreen, setCurrentScreen] = useState('Continue');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -69,6 +86,8 @@ export default function App() {
   const handleLogin = async () => {
     setErrorMessage('Logging in...');
     try {
+      const auth = getAuthSafe();
+      if (!auth) throw new Error('Auth not ready');
       await signInWithEmailAndPassword(auth, email, password);
       setCurrentScreen('MainApp');
       setErrorMessage('');
@@ -80,6 +99,8 @@ export default function App() {
   const handleSignup = async () => {
     setErrorMessage('Creating account...');
     try {
+      const auth = getAuthSafe();
+      if (!auth) throw new Error('Auth not ready');
       await createUserWithEmailAndPassword(auth, email, password);
       setCurrentScreen('MainApp');
       setErrorMessage('');
@@ -90,7 +111,8 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      const auth = getAuthSafe();
+      if (auth) await signOut(auth);
       setCurrentScreen('Continue');
       setEmail('');
       setPassword('');
@@ -148,6 +170,15 @@ export default function App() {
     console.log('✅ YouTube player ready');
     setPlayerReady(true);
   }, []);
+
+  if (!fontsLoaded && !fontError) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }}>
+        <StatusBar barStyle="light-content" backgroundColor="#000" />
+        <ActivityIndicator size="large" color="#1db954" />
+      </SafeAreaView>
+    );
+  }
 
   if (currentScreen === 'Continue') {
     return (
@@ -510,3 +541,54 @@ const styles = StyleSheet.create({
   innerControls: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 40 },
   playPauseBtn: { width: 72, height: 72, borderRadius: 36, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' }
 });
+
+// ======================================================
+// BULLETPROOF ERROR BOUNDARY (Prevents app crashing to home)
+// ======================================================
+class ErrorBoundary extends React.Component {
+  state = { hasError: false, errorMessage: '' };
+
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      errorMessage: error ? (error.stack || error.message || String(error)) : 'Unknown error'
+    };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('App error caught by ErrorBoundary:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#121212', padding: 24, justifyContent: 'center' }}>
+          <StatusBar barStyle="light-content" backgroundColor="#121212" />
+          <Text style={{ color: '#ff4444', fontSize: 20, fontWeight: '800', marginBottom: 12 }}>
+            Something went wrong
+          </Text>
+          <ScrollView style={{ maxHeight: 300, backgroundColor: '#1e1e1e', padding: 12, borderRadius: 8 }}>
+            <Text style={{ color: '#ffffff', fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
+              {this.state.errorMessage}
+            </Text>
+          </ScrollView>
+          <TouchableOpacity
+            style={{ marginTop: 20, backgroundColor: '#1db954', padding: 14, borderRadius: 24, alignItems: 'center' }}
+            onPress={() => this.setState({ hasError: false, errorMessage: '' })}
+          >
+            <Text style={{ color: '#000000', fontWeight: '700', fontSize: 15 }}>Try Again</Text>
+          </TouchableOpacity>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function SafeApp() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
