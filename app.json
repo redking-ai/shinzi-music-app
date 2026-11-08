@@ -3,8 +3,14 @@
     "name": "Shinzi Music",
     "slug": "shinzi-music-app",
     "version": "1.0.0",
+    "orientation": "portrait",
     "android": {
-      "package": "com.redking.shinzimusic"
+      "package": "com.redking.shinzimusic",
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "WAKE_LOCK"
+      ]
     }
   }
 }

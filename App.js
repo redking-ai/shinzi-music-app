@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, ScrollView, TextInput, KeyboardAvoidingView, Platform, Modal, Image, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, ScrollView, TextInput, KeyboardAvoidingView, Platform, Image, ActivityIndicator, BackHandler } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import YoutubeIframe from 'react-native-youtube-iframe';
 
-import { initializeApp } from 'firebase/app';
-import { initializeAuth, getReactNativePersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeAuth, getAuth, getReactNativePersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ======================================================
@@ -15,8 +15,14 @@ const firebaseConfig = {
   authDomain: 'shinzi-music.firebaseapp.com',
   projectId: 'shinzi-music'
 };
-const app = initializeApp(firebaseConfig);
-const auth = initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
+
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+let auth;
+try {
+  auth = initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
+} catch {
+  auth = getAuth(app);
+}
 
 // ======================================================
 // RENDER SEARCH BACKEND
@@ -47,6 +53,18 @@ export default function App() {
       setSearchResults([]);
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    const backAction = () => {
+      if (isPlayerOpen) {
+        setIsPlayerOpen(false);
+        return true;
+      }
+      return false;
+    };
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [isPlayerOpen]);
 
   const handleLogin = async () => {
     setErrorMessage('Logging in...');
@@ -312,20 +330,35 @@ export default function App() {
         </View>
       </View>
 
-      {/* --- FULLSCREEN PLAYER --- */}
-      <Modal animationType="slide" transparent={false} visible={isPlayerOpen} onRequestClose={() => setIsPlayerOpen(false)}>
-        <SafeAreaView style={styles.innerPlayerContainer}>
+      {/* --- FULLSCREEN PLAYER (Continuous audio playback on minimize) --- */}
+      <View
+        style={[
+          styles.innerPlayerContainer,
+          {
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 9999,
+            transform: [{ translateY: isPlayerOpen ? 0 : 3000 }],
+            opacity: isPlayerOpen ? 1 : 0,
+          },
+        ]}
+        pointerEvents={isPlayerOpen ? 'auto' : 'none'}
+      >
+        <SafeAreaView style={{ flex: 1 }}>
           <StatusBar barStyle="light-content" backgroundColor="#121212" />
           
           <View style={styles.innerHeader}>
-            <TouchableOpacity onPress={() => setIsPlayerOpen(false)}>
+            <TouchableOpacity onPress={() => setIsPlayerOpen(false)} style={{ padding: 4 }}>
               <Ionicons name="chevron-down" size={32} color="#fff" />
             </TouchableOpacity>
             <Text style={styles.innerHeaderText}>NOW PLAYING</Text>
             <View style={{ width: 32 }} />
           </View>
 
-          {/* 🔥 OFFICIAL YOUTUBE PLAYER 🔥 */}
+          {/* 🔥 OFFICIAL YOUTUBE PLAYER WITH FIXES 🔥 */}
           <View style={styles.youtubeContainer}>
             {currentTrack ? (
               <YoutubeIframe
@@ -336,10 +369,22 @@ export default function App() {
                 play={isPlaying}
                 onReady={onPlayerReady}
                 onChangeState={onPlayerStateChange}
+                onError={(err) => {
+                  console.log('YouTube Player Error:', err);
+                  setErrorMessage('Track playback error: ' + (err || ''));
+                }}
+                webViewProps={{
+                  androidLayerType: 'hardware',
+                  mediaPlaybackRequiresUserAction: false,
+                  allowsInlineMediaPlayback: true,
+                  origin: 'https://shinzi-music.firebaseapp.com',
+                }}
                 initialPlayerParams={{
                   controls: 1,
                   fs: 1,
-                  playsinline: 1
+                  playsinline: 1,
+                  rel: 0,
+                  preventFullScreen: false,
                 }}
               />
             ) : (
@@ -384,7 +429,7 @@ export default function App() {
             <TouchableOpacity><Ionicons name="repeat" size={28} color="#a7a7a7" /></TouchableOpacity>
           </View>
         </SafeAreaView>
-      </Modal>
+      </View>
     </SafeAreaView>
   );
 }
