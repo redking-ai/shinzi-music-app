@@ -1,44 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, ScrollView, TextInput, KeyboardAvoidingView, Platform, Image, ActivityIndicator, BackHandler } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, ScrollView, TextInput, KeyboardAvoidingView, Platform, Image, ActivityIndicator, BackHandler, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Font from 'expo-font';
 import YoutubeIframe from 'react-native-youtube-iframe';
-
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { initializeAuth, getAuth, getReactNativePersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ======================================================
-// FIREBASE CONFIG
+// FIREBASE CONFIG & REST AUTH (100% stable, zero native issues)
 // ======================================================
 const firebaseConfig = {
-  apiKey: ['AIzaSyA9', '-BquJOixe2dku', 'MA4OR_LH_', '-4kqcFrRE'].join(''),
+  apiKey: 'AIzaSyA9-BquJOixe2dkuMA4OR_LH_-4kqcFrRE',
   authDomain: 'shinzi-music.firebaseapp.com',
-  projectId: 'shinzi-music'
+  projectId: 'shinzi-music',
+  storageBucket: 'shinzi-music.firebasestorage.app',
+  messagingSenderId: '985596670426',
+  appId: '1:985596670426:web:b52b69290533ae3dc450e3'
 };
-
-let appInstance = null;
-let authInstance = null;
-
-function getAuthSafe() {
-  if (!authInstance) {
-    try {
-      if (!appInstance) {
-        appInstance = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-      }
-      authInstance = initializeAuth(appInstance, {
-        persistence: getReactNativePersistence(AsyncStorage),
-      });
-    } catch {
-      try {
-        authInstance = getAuth(appInstance || initializeApp(firebaseConfig));
-      } catch (err) {
-        console.warn('Auth fallback error:', err);
-      }
-    }
-  }
-  return authInstance;
-}
 
 // ======================================================
 // RENDER SEARCH BACKEND
@@ -51,11 +29,26 @@ function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [showGoogleAuth, setShowGoogleAuth] = useState(false);
 
   const [activeTab, setActiveTab] = useState('Home');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
+
+  // Auto restore login session on startup
+  useEffect(() => {
+    AsyncStorage.getItem('shinzi_auth_user').then(saved => {
+      if (saved) {
+        try {
+          const user = JSON.parse(saved);
+          if (user?.email) {
+            setCurrentScreen('MainApp');
+          }
+        } catch {}
+      }
+    });
+  }, []);
 
   // PLAYER STATE
   const [currentTrack, setCurrentTrack] = useState(null);
@@ -73,6 +66,10 @@ function App() {
 
   useEffect(() => {
     const backAction = () => {
+      if (showGoogleAuth) {
+        setShowGoogleAuth(false);
+        return true;
+      }
       if (isPlayerOpen) {
         setIsPlayerOpen(false);
         return true;
@@ -81,38 +78,79 @@ function App() {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [isPlayerOpen]);
+  }, [isPlayerOpen, showGoogleAuth]);
 
   const handleLogin = async () => {
+    if (!email.trim() || !password) {
+      setErrorMessage('Please enter email and password.');
+      return;
+    }
     setErrorMessage('Logging in...');
     try {
-      const auth = getAuthSafe();
-      if (!auth) throw new Error('Auth not ready');
-      await signInWithEmailAndPassword(auth, email, password);
+      const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password, returnSecureToken: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const msg = data.error?.message || 'Login failed';
+        if (msg === 'EMAIL_NOT_FOUND' || msg === 'INVALID_PASSWORD' || msg === 'INVALID_LOGIN_CREDENTIALS') {
+          throw new Error('Invalid email or password.');
+        }
+        throw new Error(msg);
+      }
+      await AsyncStorage.setItem('shinzi_auth_user', JSON.stringify({
+        email: data.email,
+        localId: data.localId,
+        idToken: data.idToken,
+      }));
       setCurrentScreen('MainApp');
       setErrorMessage('');
     } catch (error) {
-      setErrorMessage(error.message.replace('Firebase: ', ''));
+      setErrorMessage(error.message);
     }
   };
 
   const handleSignup = async () => {
+    if (!email.trim() || !password) {
+      setErrorMessage('Please enter email and password.');
+      return;
+    }
+    if (password.length < 6) {
+      setErrorMessage('Password must be at least 6 characters.');
+      return;
+    }
     setErrorMessage('Creating account...');
     try {
-      const auth = getAuthSafe();
-      if (!auth) throw new Error('Auth not ready');
-      await createUserWithEmailAndPassword(auth, email, password);
+      const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password, returnSecureToken: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const msg = data.error?.message || 'Signup failed';
+        if (msg === 'EMAIL_EXISTS') {
+          throw new Error('This email is already in use. Please log in.');
+        }
+        throw new Error(msg);
+      }
+      await AsyncStorage.setItem('shinzi_auth_user', JSON.stringify({
+        email: data.email,
+        localId: data.localId,
+        idToken: data.idToken,
+      }));
       setCurrentScreen('MainApp');
       setErrorMessage('');
     } catch (error) {
-      setErrorMessage(error.message.replace('Firebase: ', ''));
+      setErrorMessage(error.message);
     }
   };
 
   const handleLogout = async () => {
     try {
-      const auth = getAuthSafe();
-      if (auth) await signOut(auth);
+      await AsyncStorage.removeItem('shinzi_auth_user');
       setCurrentScreen('Continue');
       setEmail('');
       setPassword('');
@@ -194,7 +232,51 @@ function App() {
           <TouchableOpacity style={[styles.authBtn, styles.btnSecondary]} onPress={() => { setErrorMessage(''); setCurrentScreen('Login'); }}>
             <Text style={styles.btnSecondaryText}>Log In</Text>
           </TouchableOpacity>
+
+          <View style={styles.dividerRow}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>OR</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
+          <TouchableOpacity style={styles.googleBtn} onPress={() => setShowGoogleAuth(true)}>
+            <Image
+              source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/120px-Google_%22G%22_logo.svg.png' }}
+              style={{ width: 20, height: 20, marginRight: 10 }}
+            />
+            <Text style={styles.googleBtnText}>Continue with Google</Text>
+          </TouchableOpacity>
         </View>
+
+        {/* GOOGLE AUTH POPUP MODAL */}
+        <Modal visible={showGoogleAuth} animationType="slide" onRequestClose={() => setShowGoogleAuth(false)}>
+          <SafeAreaView style={{ flex: 1, backgroundColor: '#090909' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#282828' }}>
+              <TouchableOpacity onPress={() => setShowGoogleAuth(false)} style={{ padding: 4 }}>
+                <Ionicons name="close" size={28} color="#fff" />
+              </TouchableOpacity>
+              <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Google Sign In</Text>
+              <View style={{ width: 36 }} />
+            </View>
+            <WebView
+              source={{ uri: 'https://redking-ai.github.io/Shinzi-music/login.html' }}
+              onNavigationStateChange={(navState) => {
+                if (navState.url.includes('index.html')) {
+                  setShowGoogleAuth(false);
+                  AsyncStorage.setItem('shinzi_auth_user', JSON.stringify({
+                    email: 'Google User',
+                    loggedIn: true,
+                  }));
+                  setCurrentScreen('MainApp');
+                }
+              }}
+              userAgent="Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+              style={{ flex: 1, backgroundColor: '#090909' }}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+            />
+          </SafeAreaView>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -211,10 +293,54 @@ function App() {
           <TextInput style={styles.input} placeholder="Email" placeholderTextColor="#757575" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
           <TextInput style={styles.input} placeholder="Password" placeholderTextColor="#757575" value={password} onChangeText={setPassword} secureTextEntry />
           {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
-          <TouchableOpacity style={[styles.authBtn, styles.btnPrimary, { marginTop: 20 }]} onPress={isLogin ? handleLogin : handleSignup}>
+          <TouchableOpacity style={[styles.authBtn, styles.btnPrimary, { marginTop: 14 }]} onPress={isLogin ? handleLogin : handleSignup}>
             <Text style={styles.btnPrimaryText}>{isLogin ? 'Log In' : 'Sign Up'}</Text>
           </TouchableOpacity>
+
+          <View style={styles.dividerRow}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>OR</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
+          <TouchableOpacity style={styles.googleBtn} onPress={() => setShowGoogleAuth(true)}>
+            <Image
+              source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/120px-Google_%22G%22_logo.svg.png' }}
+              style={{ width: 20, height: 20, marginRight: 10 }}
+            />
+            <Text style={styles.googleBtnText}>{isLogin ? 'Log in with Google' : 'Sign up with Google'}</Text>
+          </TouchableOpacity>
         </KeyboardAvoidingView>
+
+        {/* GOOGLE AUTH POPUP MODAL */}
+        <Modal visible={showGoogleAuth} animationType="slide" onRequestClose={() => setShowGoogleAuth(false)}>
+          <SafeAreaView style={{ flex: 1, backgroundColor: '#090909' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#282828' }}>
+              <TouchableOpacity onPress={() => setShowGoogleAuth(false)} style={{ padding: 4 }}>
+                <Ionicons name="close" size={28} color="#fff" />
+              </TouchableOpacity>
+              <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Google Sign In</Text>
+              <View style={{ width: 36 }} />
+            </View>
+            <WebView
+              source={{ uri: isLogin ? 'https://redking-ai.github.io/Shinzi-music/login.html' : 'https://redking-ai.github.io/Shinzi-music/signup.html' }}
+              onNavigationStateChange={(navState) => {
+                if (navState.url.includes('index.html')) {
+                  setShowGoogleAuth(false);
+                  AsyncStorage.setItem('shinzi_auth_user', JSON.stringify({
+                    email: 'Google User',
+                    loggedIn: true,
+                  }));
+                  setCurrentScreen('MainApp');
+                }
+              }}
+              userAgent="Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+              style={{ flex: 1, backgroundColor: '#090909' }}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+            />
+          </SafeAreaView>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -479,6 +605,11 @@ const styles = StyleSheet.create({
   btnSecondary: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#a7a7a7' },
   btnPrimaryText: { color: '#000', fontSize: 16, fontWeight: '700' },
   btnSecondaryText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  dividerRow: { flexDirection: 'row', alignItems: 'center', width: '100%', marginVertical: 14 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: '#333' },
+  dividerText: { color: '#a0a0a0', marginHorizontal: 12, fontSize: 12, fontWeight: '700' },
+  googleBtn: { width: '100%', padding: 14, backgroundColor: '#ffffff', borderRadius: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  googleBtnText: { color: '#000000', fontSize: 15, fontWeight: '700' },
   backBtn: { position: 'absolute', top: 20, left: 20 },
   input: { width: '100%', backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: '#333', color: '#fff', borderRadius: 8, padding: 16, fontSize: 15, marginBottom: 16 },
   errorText: { color: '#ff4444', fontSize: 13, marginTop: -8, marginBottom: 8, textAlign: 'center' },
